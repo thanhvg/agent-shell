@@ -105,6 +105,7 @@
 (require 'shell-maker)
 (require 'svg nil :noerror)
 (require 'transient)
+(require 'yank-media)
 
 ;; Optional flycheck integration (used in agent-shell--get-flycheck-error-context)
 (declare-function flycheck-overlay-errors-at "flycheck" (pos))
@@ -2408,6 +2409,7 @@ mouse selection or a kill where mark > point) is normalized."
   "C-c C-t" #'agent-shell-set-session-thought-level
   "C-c C-o" #'agent-shell-other-buffer
   "C-c C-s" #'agent-shell-set-session-config-option
+  "C-c C-y" #'yank-media
   "<remap> <yank>" #'agent-shell-yank-dwim
   "<remap> <comint-send-input>" #'agent-shell-submit
   ;; No equivalent in comint, bind explicitly.
@@ -4843,6 +4845,7 @@ variable (see makunbound)"))
       (when agent-shell-file-completion-enabled
         (agent-shell-completion-mode +1))
       (agent-shell--enable-dnd)
+      (yank-media-handler "image/.*" #'agent-shell--yank-media-handle-image)
       (agent-shell--setup-modeline)
       (setq-local agent-shell--transcript-file (agent-shell--transcript-file-path))
       ;; We disabled aliasing comint/shell-maker commands
@@ -9219,6 +9222,56 @@ for details."
        :text (agent-shell--get-files-context :files (list image-path))
        :shell-buffer (agent-shell--shell-buffer))
     (yank arg)))
+
+;;; yank media
+(defun agent-shell--yank-media-image-extension (mime-type)
+  "Return an image file extension for MIME-TYPE, or nil if not an image.
+
+MIME-TYPE is the symbol `yank-media' passes to a registered handler
+\(e.g. `image/png'), not a string.  For example, `image/png' returns
+\"png\" and `image/svg+xml' returns \"svg\"."
+  (let ((mime-type (symbol-name mime-type)))
+    (when (string-prefix-p "image/" mime-type)
+      (pcase mime-type
+        ("image/svg+xml" "svg")
+        ("image/jpeg" "jpg")
+        (_ (string-remove-prefix "image/" mime-type))))))
+
+(defun agent-shell--yank-media-save-image (destination-dir data extension)
+  "Write image DATA (raw bytes) to a new file under DESTINATION-DIR.
+
+EXTENSION is the file's extension, without a leading dot.  Returns
+the file's absolute path.  Named the same way
+`agent-shell--save-clipboard-image' names its files."
+  (let* ((file-path (expand-file-name
+                     (format "clipboard-%s.%s"
+                             (format-time-string "%Y%m%d-%H%M%S")
+                             extension)
+                     destination-dir))
+         (coding-system-for-write 'binary))
+    (write-region data nil file-path nil 'silent)
+    file-path))
+
+(defun agent-shell--yank-media-handle-image (mime-type data)
+  "Handle an image yanked via `yank-media' of MIME-TYPE with DATA.
+
+Registered per-buffer with `yank-media-handler' (see `agent-shell--start'),
+so \\[yank-media] can paste an image straight from the system
+clipboard using Emacs's own MIME-aware clipboard support (Emacs 29+),
+without needing the external utilities in
+`agent-shell-clipboard-image-handlers'.
+
+Saves DATA to `agent-shell''s screenshots cache directory and inserts
+it the same way `agent-shell-send-clipboard-image' does."
+  (if-let* ((extension (agent-shell--yank-media-image-extension mime-type)))
+      (let* ((screenshots-dir (agent-shell--dot-subdir "screenshots"))
+             (image-path (agent-shell--yank-media-save-image
+                          screenshots-dir data extension))
+             (shell-buffer (current-buffer)))
+        (agent-shell-insert
+         :text (agent-shell--get-files-context :files (list image-path))
+         :shell-buffer shell-buffer))
+    (message "agent-shell: no handler for yanked media type: %s" mime-type)))
 
 ;;; Permissions
 
