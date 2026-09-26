@@ -39,9 +39,67 @@
 (require 'agent-shell-faces)
 
 ;;; Normalization
+;;; Normalization
+
+(defun agent-shell--config-option-group-p (acp-entry)
+  "Return non-nil if ACP-ENTRY looks like a ConfigOptionGroup.
+
+Per the spec, an option's `options' field is either a flat array of
+ConfigOptionValue or an array of ConfigOptionGroup (never mixed); a
+group is distinguished by having a `group' identifier.
+
+See https://agentclientprotocol.com/protocol/v1/session-config-options#param-options"
+  (and (map-elt acp-entry 'group) t))
+
+(defun agent-shell--normalize-config-option-value (acp-value &optional group-name)
+  "Normalize ACP-VALUE (a ConfigOptionValue) to an internal alist.
+
+When GROUP-NAME is non-nil (the value came from a ConfigOptionGroup),
+it's prepended to :name as \"[GROUP-NAME] NAME\" so callers that just
+display :name see the grouping without needing to know groups exist.
+:value is left untouched, since it's the id sent back to the agent.
+
+For example:
+
+  (agent-shell--normalize-config-option-value
+   \\='((value . \"ask\") (name . \"Ask\")))
+  => \\='((:value . \"ask\") (:name . \"Ask\") (:description . nil))
+
+  (agent-shell--normalize-config-option-value
+   \\='((value . \"model-1\") (name . \"Model 1\")) \"Recommended\")
+  => \\='((:value . \"model-1\") (:name . \"[Recommended] Model 1\") (:description . nil))"
+  `((:value . ,(map-elt acp-value 'value))
+    (:name . ,(let ((name (map-elt acp-value 'name)))
+                (if group-name
+                    (format "[%s] %s" group-name name)
+                  name)))
+    (:description . ,(map-elt acp-value 'description))))
+
+(defun agent-shell--normalize-config-option-values (acp-entries)
+  "Normalize ACP-ENTRIES (the raw `options' array on a config option).
+
+Returns a flat list of internal value alists regardless of whether
+ACP-ENTRIES was a flat array of ConfigOptionValue or an array of
+ConfigOptionGroup; grouped values have their group name folded into
+:name (see `agent-shell--normalize-config-option-value'). Array order
+(significant per spec) is preserved throughout."
+  (mapcan (lambda (acp-entry)
+            (if (agent-shell--config-option-group-p acp-entry)
+                (mapcar (lambda (acp-value)
+                          (agent-shell--normalize-config-option-value
+                           acp-value
+                           (map-elt acp-entry 'name)))
+                        (append (map-elt acp-entry 'options) nil))
+              (list (agent-shell--normalize-config-option-value acp-entry))))
+          acp-entries))
 
 (defun agent-shell--normalize-config-option (acp-option)
   "Normalize ACP-OPTION (an ACP config option) to an internal alist.
+
+:options is always a flat list of value alists, whether the wire
+payload used a flat array or grouped ConfigOptionGroup entries; values
+from a group additionally carry :group and :group-name (see
+`agent-shell--normalize-config-option-values').
 
 For example:
 
@@ -54,11 +112,8 @@ For example:
     (:category . ,(map-elt acp-option 'category))
     (:type . ,(map-elt acp-option 'type))
     (:current-value . ,(map-elt acp-option 'currentValue))
-    (:options . ,(mapcar (lambda (acp-value)
-                           `((:value . ,(map-elt acp-value 'value))
-                             (:name . ,(map-elt acp-value 'name))
-                             (:description . ,(map-elt acp-value 'description))))
-                         (append (map-elt acp-option 'options) nil)))))
+    (:options . ,(agent-shell--normalize-config-option-values
+                  (append (map-elt acp-option 'options) nil)))))
 
 (defun agent-shell--normalize-config-options (acp-config-options)
   "Normalize ACP-CONFIG-OPTIONS (ACP `configOptions') to internal alists.
